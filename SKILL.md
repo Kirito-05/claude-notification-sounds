@@ -117,23 +117,31 @@ Uses a PID lock file. Each hook process kills the previous one before playing.
 
 **Windows:**
 ```powershell
-$l='<ROOT>\.playlock';$o=try{gc $l -ea 0}catch{$null};if($o-and(Get-Process -Id $o -ea 0)){Stop-Process -Id $o -Force -ea 0};$d='<FOLDER>';if(Test-Path $d){$f=ls "$d\*.wav" -ea 0|Get-Random;if($f){$PID|Out-File $l;(New-Object Media.SoundPlayer $f.FullName).PlaySync();if((gc $l -ea 0)-eq$PID){Remove-Item $l -ea 0}}}
+$l='<ROOT>\.playlock';$d='<FOLDER>';if(Test-Path $d){$f=ls "$d\*.wav" -ea 0|Get-Random;if($f){$o=try{gc $l -ea 0}catch{$null};if($o-and(Get-Process -Id $o -ea 0)){Stop-Process -Id $o -Force -ea 0};$PID|Out-File $l;(New-Object Media.SoundPlayer $f.FullName).PlaySync();if((gc $l -ea 0)-eq$PID){Remove-Item $l -ea 0}}}
 ```
 
 **macOS:**
 ```bash
-l='<ROOT>/.playlock'; [ -f "$l" ] && kill $(cat "$l") 2>/dev/null; d='<FOLDER>'; if [ -d "$d" ]; then f=$(find "$d" -name '*.wav' -maxdepth 1 | sort -R | head -1); [ -n "$f" ] && { echo $$ > "$l"; afplay "$f"; [ "$(cat "$l" 2>/dev/null)" = "$$" ] && rm -f "$l"; }; fi
+l='<ROOT>/.playlock'; d='<FOLDER>'; if [ -d "$d" ]; then f=$(find "$d" -name '*.wav' -maxdepth 1 | sort -R | head -1); [ -n "$f" ] && { [ -f "$l" ] && kill $(cat "$l") 2>/dev/null; echo $$ > "$l"; afplay "$f"; [ "$(cat "$l" 2>/dev/null)" = "$$" ] && rm -f "$l"; }; fi
 ```
 
 **Linux:**
 ```bash
-l='<ROOT>/.playlock'; [ -f "$l" ] && kill $(cat "$l") 2>/dev/null; d='<FOLDER>'; if [ -d "$d" ]; then f=$(find "$d" -name '*.wav' -maxdepth 1 | sort -R | head -1); [ -n "$f" ] && { echo $$ > "$l"; (command -v paplay >/dev/null && paplay "$f" || command -v aplay >/dev/null && aplay "$f" || command -v ffplay >/dev/null && ffplay -nodisp -autoexit "$f"); [ "$(cat "$l" 2>/dev/null)" = "$$" ] && rm -f "$l"; }; fi
+l='<ROOT>/.playlock'; d='<FOLDER>'; if [ -d "$d" ]; then f=$(find "$d" -name '*.wav' -maxdepth 1 | sort -R | head -1); [ -n "$f" ] && { [ -f "$l" ] && kill $(cat "$l") 2>/dev/null; echo $$ > "$l"; (command -v paplay >/dev/null && paplay "$f" || command -v aplay >/dev/null && aplay "$f" || command -v ffplay >/dev/null && ffplay -nodisp -autoexit "$f"); [ "$(cat "$l" 2>/dev/null)" = "$$" ] && rm -f "$l"; }; fi
 ```
 
 The PID lock file lives at `<ROOT>/.playlock` — one file for ALL hooks in this
 setup. Each process writes its own PID, and before playing, kills whatever PID
 is currently in the file. After playback, only cleans up if its own PID is still
 the one in the file (not overwritten by a newer process).
+
+**Critical: kill only when actually playing.** The kill-the-previous-player
+logic is placed AFTER the folder-exists and has-audio-files checks (inside the
+`if ($f)` / `[ -n "$f" ]` block). Why: if a hook event has an empty folder (no
+`.wav` files yet), and the kill ran unconditionally at the start, it would
+silently kill the currently-playing sound from another hook without playing
+anything itself — making it seem like all hooks are broken when only one folder
+is empty. This was discovered from real-world debugging.
 
 ### queue implementation
 
@@ -253,6 +261,7 @@ For each enabled event, build the hook object:
     {
       "type": "command",
       "command": "<mode-specific command with resolved paths>",
+      "shell": "<platform-shell>",
       "async": true
     }
   ]
@@ -267,11 +276,24 @@ For each enabled event, build the hook object:
     {
       "type": "command",
       "command": "<mode-specific command with resolved paths>",
+      "shell": "<platform-shell>",
       "async": true
     }
   ]
 }
 ```
+
+**`"shell"` is REQUIRED on Windows.** On Windows — especially in the VSCode
+extension — hooks default to `cmd.exe`, which cannot run PowerShell syntax.
+Set `"shell": "powershell"` so the hook commands actually execute. Without it,
+hooks silently fail because `$var` expansion and cmdlets like `Get-Process` are
+not valid in cmd.exe.
+
+| Platform | `"shell"` value | Notes |
+|----------|----------------|-------|
+| Windows | `"powershell"` | **Required.** Hooks silently fail without it |
+| macOS | omit | Defaults to `/bin/sh`, bash is fine |
+| Linux | omit | Defaults to `/bin/sh`, bash is fine |
 
 ### 5f: Merge into settings.json
 
@@ -390,6 +412,11 @@ These are baked into every generated hook command:
   the `if ($f)` check handles, skipping playback silently
 - **No polling, no daemons, no persistent processes** — each hook fires once
   per event, plays one sound, then the process exits
+- **`"shell": "powershell"` on Windows** — without it, hooks default to `cmd.exe`
+  and PowerShell syntax silently fails (especially in the VSCode extension)
+- **Kill-before-play is inside the audio-found guard** — empty folders won't
+  kill playback from other hooks (real bug: 4 empty folders made the only
+  working folder appear broken because every hook killed its player first)
 - **Zero token consumption** — hooks are shell commands, not LLM prompts
 
 ---

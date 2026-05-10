@@ -51,6 +51,10 @@ Default mode: **interrupt** — new sound kills the previous one, no overlapping
 
 ## Supported platforms
 
-- **Windows** — PowerShell + Media.SoundPlayer (WAV, zero dependency)
+- **Windows** — PowerShell + Media.SoundPlayer (WAV, zero dependency). Hooks must include `"shell": "powershell"` or commands silently fail in cmd.exe.
 - **macOS** — afplay (WAV/MP3/AAC, built-in)
 - **Linux** — paplay → aplay → ffplay (auto-detect)
+
+## Troubleshooting
+
+**No sound on Windows:** Check that each hook has `"shell": "powershell"` in settings.json. Without it, PowerShell commands run in cmd.exe and silently fail. Also check that the hook's audio folder actually contains `.wav` files — the `--check` command can diagnose both issues.
